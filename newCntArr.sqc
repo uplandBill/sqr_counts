@@ -1,0 +1,31 @@
+Create-Array Name=Categories Size=151  !Array to hold all the different kinds of Competencies that appear on the report
+   field=Category:char
+   field=cntCnt:integer
+Create-Array Name=rowText Size=301     !Temp array to hold a line/row of text values that could be headings, or a list of competencies for an employee
+   field=Rating:char                   !One use is for comps, the position that corresponds to Categories, the competency ratings for a document.
+Create-Array Name=colText Size=301     !Temp array to hold a column/list of text values, such as values in left hand column for a pivot table
+   field=Rating:char
+
+Create-Array Name=newCats Size=10      !This array stores the individual 'fields' that are being counted for this category.  Last element is a sub array.
+   field=catId:char                    !Unique category id which defines the associate of the list of categories in the list field
+   field=catCnt:integer                !Number of categories in catList
+   field=catList:char:9                !up to 10 different categories for this cat id, Starts at 1
+Create-Array Name=newCounts Size=10000
+   field=category:char                 !This is the category of something being counted.  It would be in the cat list from newCats array, prefixed with that cat id's index value
+   field=catValue:char                 !This is a value for cat id, which is what we are counting
+   field=cntParent:integer             !This is the parent of this category; a sort of pointer
+   field=cntCnt:integer                !This is the number of occurrences for the value
+   field=cntSum:number                 !This is an optional value (other than 1) to count by, say comp rate
+Create-Array Name=stringParms Size=10  !This is the array to hold the individual values from string parameter
+   field=parm:char
+Create-Array Name=catKeys Size=9       !Like the above definition used for placement of category keys (prefix+category)
+   field=parm:char
+Create-Array Name=catStack Size=100    !stack for use in outputing of the newCounts
+   field=par:integer
+   field=loop:integer
+   field=level:integer
+   field=catIdx:char
+   field=parCnt:integer   !NEW NEW NEW
+Create-Array Name=pivot Size=301    !stack for use in outputing of the newCounts
+   field=cellVal:number:301         !Value stored in the cell
+   field=cellCnt:integer:301        !Count of how many individual values contributed to overall cell value

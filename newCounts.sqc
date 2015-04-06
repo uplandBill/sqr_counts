@@ -1,0 +1,894 @@
+!
+!
+! Reimers Nov 7 2012 - Add Percent Option for Summary Reports - Need to add array field    field=parCnt:integer   !NEW NEW NEW to the stack array in source program
+!
+! March 2014 - Add apppend option to dump-new-counts2
+!            - Utilize sqc for HTML output (may results in different parms for exisiting programs)
+!
+begin-procedure open-summary-file($catId, #catIdx, $catIdx, #fileNum)
+   let $filename = 'c:\temp\summary' || '-' || $catId || $catIdx || '.html'
+   show 'Opening: ' $filename ' at ' #fileNum edit '99'
+   Open $filename as #fileNum for-writing record=5000:Vary Status=#openStat
+   if #openStat < 0
+      let $MESSAGE_TYPE = $ERROR
+      let $ERROR_MESSAGE = $filename || $FILE_NOT_OPEN_READ_MSG
+      show $error_message
+      stop
+   end-if
+End-Procedure
+
+begin-procedure append-summary-file($catId, #catIdx, $catIdx, #fileNum)
+   let $filename = 'c:\temp\summary' || '-' || $catId || $catIdx || '.html'
+   show 'Appending: ' $filename
+   Open $filename as #fileNum for-append record=5000:Vary Status=#openStat
+   if #openStat < 0
+      let $MESSAGE_TYPE = $ERROR
+      let $ERROR_MESSAGE = $INTERFACE_FILE1 || $FILE_NOT_OPEN_READ_MSG
+      stop
+   end-if
+End-Procedure
+
+begin-procedure init-rowText
+   let #idx = 1
+   while #idx < 301
+       put '' into rowText(#idx)
+       let #idx = #idx + 1
+   end-while
+end-procedure
+
+begin-procedure init-colText
+   let #idx = 1
+   while #idx < 301
+       put '' into colText(#idx)
+       let #idx = #idx + 1
+   end-while
+end-procedure
+
+begin-procedure get-catIdx-from-key($key, :$catIdx)
+   unstring $key by ':' into $catIdx $temp 
+end-procedure
+
+begin-procedure parse-parms($stringList, :#parmCnt, :$messages)
+!
+!   This procedure will parse through the string paramater list used for defining new category ids, and later for populating categories.
+!   The string should be in this form: '"string1" , "string2", "string3", ... '
+!   Input: $stringList - A string of quote values
+!   Output: #parmCnt    - number of values found and put in array
+!           stringParms - array updated with the found values, starting at 1
+!           $messages   - errors or warnings encounterd
+!
+   let #parmCnt = 0
+   let $messages = ''
+   let #begStr = instr($stringList, '"', 0) + 1
+   let #endStr = instr($stringList, '"', #begStr) 
+   !What if we have Double Quotes?
+   let #lenStr = #endStr - #begStr 
+   let #comma  = instr($stringList, ',', #endStr)
+!   show $stringList
+   while #comma > 0
+!      show 'get word from ' #begStr edit '99' ' to ' #endStr edit '99' ' with len ' #lenStr edit '99' '  comma at ' #comma edit '99'
+      let $cat = Ltrim(Rtrim(substr($stringList, #begStr, #lenStr), ' '),' ')
+      let #parmCnt = #parmCnt + 1   !do we need to prefix a value such as the catid in order to distinguish same category label used in another cat Id?
+      if not isblank($cat)
+!         show '    -add Category: <' $cat '> in position: ' #parmCnt edit '99'
+         put $cat into stringParms(#parmCnt)
+      else
+         let $messages = $messages || 'WARNING: Empty value in parameter list.'
+         put ' ' into stringParms(#parmCnt)
+      end-if
+      let $stringList = LTrim(substr($stringList, (#comma + 1), 200), ' ')   !Prep for next parm in list
+      let #begStr = instr($stringList, '"', 0) + 1
+      let #endStr = instr($stringList, '"', #begStr) 
+      let #lenStr = #endStr - #begStr
+      let #comma  = instr($stringList, ',', #endStr)
+   end-while
+   if not isblank($stringList)
+      let $cat = Ltrim(Rtrim(substr($stringList, #begStr, #lenStr), ' '),' ')
+      let #parmCnt = #parmCnt + 1
+      if not isblank($cat)
+!         show '    -add Category: <' $cat '> in position: ' #parmCnt edit '99'
+         put $cat into stringParms(#parmCnt)
+      else
+         let $messages = $messages || 'WARNING: Empty value in parameter list.'
+         put ' ' into stringParms(#parmCnt)
+      end-if
+   end-if
+   if #parmCnt = 0
+      let $messages = $messages ||  'ERROR: Parameter list contained no individual values.'
+   end-if
+end-procedure
+
+begin-procedure dump-parameters(#parmCnt)
+   let #lp = 1
+   While #lp <= #parmCnt
+      get $parm from stringParms(#lp)
+      show '   ' #lp edit '9' ': ' $parm
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure delete-cat($catId, #catIdx, $show)
+   if $show = 'Y'
+      show '-Delete Cat: ' $catId ' ' #catIdx edit '9'
+   end-if
+   let $catIdx = edit(#catIdx,'9')
+   let #lp = 1
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-catIdx-from-key($key, $arrCatIdx)
+      if $arrCatIdx = $catIdx
+         put ' ' ' ' 0 0 0 into newCounts(#lp)
+         if $show = 'Y'
+            show '   -clear: ' #lp edit '9,999'
+         end-if
+      end-if
+      let #lp = #lp + 1
+   end-while
+
+   put ' ' into newCats(#catIdx) catId   !calling procedure had better have the right Idx
+end-procedure
+
+begin-procedure get-cat-grp-label($key, :#catIdx, :#catGrp, :$keyLabel)
+   let #catIdx = substr($key,1,1)
+   let #catGrp = substr($key,3,1)
+   get $keyLabel from newCats(#catIdx) catList(#catGrp)
+end-procedure
+
+begin-procedure define-new-cat($catId, $catList, :#catIdx, $show)
+!
+! This sets up a new categeory list.
+!  Input:  $catId   - Id to assign to this list of categories.  This is a simple identifier such as 'capCount1'
+!          $catList - comma separated list of categories in form of '"cat1" , "cat2", "cat3", ... '
+!  Output: #catIdx  - Index to new CatId
+!
+   let #reUseIdx = 0   !For reusing a place in the array if a gap appears
+   if isblank($catList)
+      show 'WARNING: Category Id: ' $catId ' not created because supplied list was empty.'
+   else
+      let $catList = LTrim($catList, ' ')
+      let #idx = 1
+      while #idx <= #_newCatCnt
+        get $id from newCats(#idx) catId
+        if $id   = $catId
+           show 'ERROR: Category Id already defined: ' $catId
+           stop
+        end-if
+        if isblank($id) 
+           and #reUseIdx = 0
+           let #reUseIdx = #idx
+        end-if
+        let #idx = #idx + 1
+      end-while
+      
+      if #reUseIdx = 0
+         let #_newCatCnt = #_newCatCnt + 1
+         let #catIdx = #_newCatCnt
+      else
+         let #catIdx = #reUseIdx
+      end-if
+      put $catId into newCats(#catIdx) catId                                  !Put the category Id into the Category Parmater array.
+      if $show = 'Y'
+         show 'Create Category Id: ' $catId ' in position: ' #catIdx edit '99'
+      end-if
+      
+      do parse-parms($catList, #catCnt, $messages)
+      if not isblank($messages)
+         show 'Category created, with these messages: ' $messages
+      end-if
+      if $show = 'Y'
+         do dump-parameters(#catCnt)
+      end-if
+      let #lp = 1
+      While #lp <= #catCnt
+         get $parm from stringParms(#lp)
+         put $parm into newCats(#catIdx) catList(#lp)                         !Put each individual category field into the sub array for this category (up to 9 fields).
+         let #lp = #lp + 1
+      end-while
+      put #catCnt into newCats(#catIdx) catCnt
+   end-if
+end-procedure
+
+begin-procedure list-all-cat-ids
+   let #lp1 = 1
+   while #lp1 <= #newCatCnt
+      get $id #catCnt from newCats(#lp1) catId catCnt
+      show 'Count Group: ' #lp1 edit '9' ': ' $id ' ' #catCnt edit '9'
+      let #lp = 1
+      While #lp <= #catCnt
+         get $parm from newCats(#lp1) catList(#lp)
+         show '    ' #lp edit '9' ': ' $parm
+         let #lp = #lp + 1
+      end-while
+      let #lp1 = #lp1 + 1
+   end-while
+end-procedure
+
+begin-procedure get-cat-id($catId, :#catIdx, :#catCnt)
+!
+!   This procedure is to find the index to a given category id
+!   Input:   $catId  - The category which is being counted
+!   Returns: #catidx - array index to the cat id, index to newCats
+!            #catCnt - Number of 'fields' in this category.
+    let #catIdx = 0
+    let #lp     = 1
+    while #lp <= #_newCatCnt
+       get $id #catCnt from newCats(#lp) catId catCnt
+!       show 'Compare [' $id '] to [' $catid ']'
+       if $catId = $id
+          let #catIdx = #lp
+          let #lp = #_newCatCnt
+       end-if
+       let #lp = #lp + 1
+    end-while
+    
+    if #catIdx = 0
+       show 'ERROR:  Attempt to work on "' $catid '" but it is not defined.'
+    end-if
+end-procedure
+
+begin-procedure construct-cat-keys(#catIdx, #catCnt)
+!
+!  This procedure creats the Category Keys.  The keys must be a unique identifier to this category and its fields as it is used in the Counts array.  The Counts
+!  array is ultimately searched on by these keys and thus must not mix up fields common to different categories.
+!  Input:   #catIdx  - Index to the category (index to newCats)
+!           #catCnt  - Number of fields for this category
+!  Returns: Population of catKeys array
+!
+   let #lp = 1
+   let $pref = edit(#catIdx, '9') || ':'
+   while #lp <= #catCnt
+      get $cat from newCats(#catIdx) catList(#lp)
+      let $cat = $pref || $cat                     !So, key the category index prefixed to the field name
+      put $cat into catKeys(#lp)
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure list-cat-keys(#catIdx, #catCnt)
+   show 'Cat Keys for Cat Id: ' #catIdx edit '99'
+   let #lp = 1
+   while #lp <= #catCnt
+      get $cat from catKeys(#lp)
+      show '   ' #lp edit '9' ': ' $cat
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure get-counts-value($catKey, :$val)
+end-procedure
+
+begin-procedure get-counts-entry($catKey, $catValue, #parent, :#catKeyIdx, :$first)
+!
+!   This procedure finds the existing entry in the newCounts array for the key and value provided, or creates a new one.
+!   Input: $catKey - The category key string/unique identifier
+!          $catValue - A value that is associated with the given key
+!   Output: #catKeyIdx - Index to count entry
+!
+   let #reUseIdx = 0
+   let #lp = 1
+   let #catKeyIdx = 0
+   let $first = 'N'
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      if $key = $catKey   And
+         $val = $catValue And
+         #par = #parent
+         let #catKeyIdx = #lp
+      else
+         if isblank($key) 
+            and #reUseIdx = 0
+            let #reUseIdx = #lp
+         end-if
+      end-if
+      let #lp = #lp + 1
+   end-while
+   
+   if #catKeyIdx = 0
+      let $first = 'Y'
+      if #reUseIdx = 0
+         let #_newCountsCnt = #_newCountsCnt + 1
+         let #catKeyIdx = #_newCountsCnt
+      else
+         let #catKeyIdx = #reUseIdx
+      end-if
+      put $catKey $catValue #parent 0 0 into newCounts(#catKeyIdx)
+   end-if
+end-procedure
+
+begin-procedure accum-count-entry(#catKeyIdx, #incAmt, :#newCnt)
+!
+!  Accumulates the counter and adds to the sum of an entry in the array.
+!  Input: #catKeyIdx - index to entry in newCounts
+!         #incAmt    - amount to increment sum field by
+!  Output: #newCnt   - current count for this entry
+!
+   get $key $val #par #cnt #sum from newCounts(#catKeyIdx)
+   let #newCnt = #cnt + 1
+   let #newSum = #sum + #incAmt
+   put #newCnt #newSum into newCounts(#catKeyIdx) cntCnt cntSum
+end-procedure
+
+begin-procedure raw-dump-counts(#max)
+!
+!  Do a raw, sequential dump of the counts array.  Pass in a value to limit the output, zero to dump entire array
+!
+   show '---Raw Dumpt New Cats Array --- max(' #max edit '9999' ')'
+   let #lp = 1
+   if #max = 0 or
+      #max < #_newCountsCnt
+      let #max = #_newCountsCnt
+   end-if
+   while #lp <= #max
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+      let $ol = '      >' || edit(#lp, '9999') || ': ' || Rpad($key, 6, ' ') || Rpad($keyLabel, 40, ' ') || Rpad($val, 40, ' ') || edit(#cnt,'9999') || '  ' || edit(#sum,'9,999,999.99') || '  ' || edit(#par, '9999')
+      show $ol
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure pushCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+   let #_catStackCnt = #_catStackCnt + 1
+   put #parent #lp #level $catIdx #parCnt into catStack(#_catStackCnt)
+end-procedure
+
+begin-procedure popCatStack(:#parent, :#lp, :#level, :$catIdx, :#parCnt)
+   get #parent #lp #level $catIdx #parCnt from catStack(#_catStackCnt)
+   let #_catStackCnt = #_catStackCnt - 1
+end-procedure
+
+begin-procedure write-cnt-html($key, $value, #cnt, #sum, #level, #fileNum, $format)
+   let #lp=1
+   let $row = ''
+   let $row2 = ''
+   while #lp <= #level
+      let $row = $row || '<td>&nbsp;</td>'
+      let #lp = #lp + 1
+   end-while
+!   let $subkey = substr($key, 3, 100)
+   do makeTd('', '', $key,  $row)
+   do makeTd('', '', $value, $row)
+   do makeTdN('numfld', '', #cnt,  $row)
+   if $format = 'P'
+      let $percent = edit(#sum, '999.88') || '%'
+      do makeTd('', '', $percent, $row)
+   else
+      if $format = 'X'
+      else
+         do makeTdN('numfld', '', #sum,  $row)
+      end-if
+   end-if
+   do makeTr('', '', $row, $row2)
+   if #fileNum <> 0
+      write #fileNum from $row2
+   else
+!      let $_countsHtml = $_countsHtml || $row2
+   end-if
+end-procedure
+
+begin-procedure get-kids(#parent, #level, $catIdx, $opt, #fileNum, #parCnt)
+!
+!Create-Array Name=catStack Size=100    !stack for use in outputing of the newCounts
+!   field=par:integer
+!   field=loop:integer
+!   field=level:integer
+
+!   show '  -get kids for ' #parent edit '9999'
+   let #lp = #parent
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+!      show '  compare idx ' #lp edit '9999' ' with parent ' #par edit '9999' ' to ' #parent edit '9999' '  sum:' #sum edit '999999999.99'
+      if #par = #parent
+         let $ol = substr('                                              ', 1, (#level * 5))
+         let $ol = $ol || edit(#lp, '9999') || ': ' || Rpad($keyLabel, 30, ' ') || Rpad($val, 40, ' ') || edit(#cnt,'999,999') || '  ' || edit(#sum,'9,999,999,999.99') || '  ' || edit(#par, '9999')
+         if $opt='A'
+            let #sum = #sum / #cnt
+            let $ol = $ol || '  ' || edit(#sum,'9,999,999.99')
+         end-if
+         if $opt='P'
+            let #sum = #sum / #parCnt * 100
+            let $ol = $ol || '  ' || edit(#sum,'999.88') || '%'
+         end-if
+         show $ol
+!         if #fileNum <> 0
+            do write-cnt-html($keyLabel, $val, #cnt, #sum, #level, #fileNum, $opt)
+!         end-if
+         do pushCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+         let #lev2 = #level + 1
+         do get-kids(#lp, #lev2, $catIdx, $opt, #fileNum, #cnt)
+         do popCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+      end-if
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure dump-new-counts2($catId, $opt, #fileNum, $append)
+   if not isblank($append)
+      do get-cat-id($append, #appCatIdx, #appCatCnt)
+      let $appCatIdx = edit(#appCatIdx, '9')
+   end-if
+   
+   do get-cat-id($catId, #catIdx, #catCnt)
+   let $catIdx = edit(#catIdx, '9')
+   
+   if #fileNum <> 0
+      if isblank($append)
+         do open-summary-file($catId, #catIdx, $catIdx, #fileNum)
+      else
+         do append-summary-file($append, #appCatIdx, $appCatIdx, #fileNum)
+      end-if
+      write #fileNum from '<html><head><style> .numfld {'
+      write #fileNum from 'text-align: right;}</style></head><body><table border="1">'
+   else
+      let $_countsHtml = '<table border="1">'
+   end-if
+   
+   let #lp = 1
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+      do get-catIdx-from-key($key, $arrCatIdx)
+      if $arrCatIdx = $catIdx
+!      if $catIdx = substr($key,1,1)
+         if #par = 0
+            let $ol = edit(#lp, '9999') || ': ' || Rpad($keyLabel, 30, ' ') || Rpad($val, 40, ' ') || edit(#cnt,'999,999') || '  ' || edit(#sum,'9,999,999,999.99') || '  ' || edit(#par, '9999')
+            if $opt='A'
+               let #sum = #sum / #cnt
+               let $ol = $ol || '  ' || edit(#sum,'99,999,999.99')
+            end-if
+            if $opt='P'
+               let #sum = #sum / #cnt * 100
+               let $ol = $ol || '  ' || edit(#sum,'999.88') || '%'
+            end-if
+            show $ol
+!            if #fileNum <> 0
+               do write-cnt-html($keyLabel, $val, #cnt, #sum, #level, #fileNum, $opt)
+!            end-if
+            do get-kids(#lp, 1, $catIdx, $opt, #fileNum, #cnt)
+         end-if
+      end-if
+      let #lp = #lp + 1
+   end-while
+   if #fileNum <> 0
+      write #fileNum from '</table></body></html>'
+      close #fileNum
+   else
+      let $_countsHtml = $_countsHtml || '</table></body></html>'
+   end-if
+end-procedure
+
+begin-procedure get-kids-string(#parent, #level, $catIdx, $opt, #fileNum, #parCnt)
+   let #lp = #parent
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+!      show '  compare idx ' #lp edit '9999' ' with parent ' #par edit '9999' ' to ' #parent edit '9999' '  sum:' #sum edit '999999999.99'
+      if #par = #parent
+         let $_orgStr = '"' || $val || '",' || $_orgStr
+         do pushCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+         let #lev2 = #level + 1
+         do get-kids(#lp, #lev2, $catIdx, $opt, #fileNum, #cnt)
+         do popCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+      end-if
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+! This isn't really working.   Look at the instead
+begin-procedure dump-cnt-string($catId, $opt, #fileNum)
+
+   let $_orgStr = ''
+   do get-cat-id($catId, #catIdx, #catCnt)
+   let $catIdx = edit(#catIdx, '9')
+   
+   let #lp = 1
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+      do get-catIdx-from-key($key, $arrCatIdx)
+      if $arrCatIdx = $catIdx
+!      if $catIdx = substr($key,1,1)
+         if #par = 0
+            let $_orgStr = '"' || $val || '"'
+            do get-kids-string(#lp, 1, $catIdx, $opt, #fileNum, #cnt)
+         end-if
+      end-if
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure loop-thru-kids(#parent, #level, $catIdx, #parCnt, #proc)
+!
+
+!   show '  -get kids for ' #parent edit '9999'
+   let #lp = #parent
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+!      show '  compare idx ' #lp edit '9999' ' with parent ' #par edit '9999' ' to ' #parent edit '9999' '  sum:' #sum edit '999999999.99'
+      if #par = #parent
+         if #proc = 1
+            do loop-proc1($key, $val, #par, #cnt, #sum)   !713
+         end-if
+         if #proc = 2
+            do loop-proc2($key, $val, #par, #cnt, #sum)
+         end-if
+         do pushCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+         let #lev2 = #level + 1
+         do get-kids(#lp, #lev2, $catIdx, $opt, #fileNum, #cnt)
+         do popCatStack(#parent, #lp, #level, $catIdx, #parCnt)
+      end-if
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure loop-thru-counts($catId, #proc)
+!
+!  Loop through the entries for a given cat.  Go through and get the root, then call the kids.
+!
+   do get-cat-id($catId, #catIdx, #catCnt)
+   let $catIdx = edit(#catIdx, '9')
+   let #lp = 1
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+      do get-catIdx-from-key($key, $arrCatIdx)
+      if $arrCatIdx = $catIdx
+         if #par = 0
+            if #proc = 1
+               do loop-proc1($keyLabel, $val, #par, #cnt, #sum)  !WMR 4/23/14 was just $key
+            end-if
+            if #proc = 2
+               do loop-proc2($key, $val, #par, #cnt, #sum)
+            end-if
+            do loop-thru-kids(#lp, 1, $catIdx, #cnt, #proc)
+         end-if
+      end-if
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+begin-procedure get-heading-idx($keyLabel, :#headIdx)
+!
+!   Loop thru the heading labels to get the index for the passed in label.  If none is found, add the label to the end of the list
+!
+   let #lp = 1
+   let #headIdx = 0
+   while #lp <= #_headCnt
+      get $curHead from rowText(#lp)
+      if $curHead = $keyLabel
+         let #headIdx = #lp
+         let #lp = #_headCnt
+      end-if
+      let #lp = #lp + 1
+   end-while
+   
+   if #headIdx = 0         !No match found
+      let #_headCnt = #_headCnt + 1
+      let #headIdx  = #_headCnt
+      put $keyLabel into rowtext(#headIdx)
+!      show 'Add ' $keyLabel ' at ' #headIdx edit '999'
+   end-if
+end-procedure
+
+begin-procedure get-column-idx($keyLabel, :#colIdx)
+!
+!   Loop thru the column labels to get the index for the passed in label.  If none is found, add the label to the end of the list
+!
+   let #lp = 1
+   let #colIdx = 0
+   while #lp <= #_colCnt
+      get $curcol from colText(#lp)
+      if $curcol = $keyLabel
+         let #colIdx = #lp
+         let #lp = #_colCnt
+      end-if
+      let #lp = #lp + 1
+   end-while
+   
+   if #colIdx = 0         !No match found
+      let #_colCnt = #_colCnt + 1
+      let #colIdx  = #_colCnt
+      put $keyLabel into colText(#colIdx)
+   end-if
+end-procedure
+
+begin-procedure create-pivot1($catId, #headCat, #rowCat, $opt, #fileNum)  !Create pivot where headings relates to category in position #headCnt
+   let $opt = upper($opt)
+   let $avg = 'N'
+   let $cnt = 'N'
+   let #t = instr($opt, 'A', 1)
+   if #t > 0
+      let $avg = 'Y'
+   end-if
+   let #t = instr($opt, 'C', 1)
+   if #t > 0
+      let $cnt = 'Y'
+   end-if
+   do get-cat-id($catId, #catIdx, #catCnt)
+   let $catIdx = edit(#catIdx, '9')
+   if #fileNum <> 0
+      do open-summary-file('pivot', #catIdx, $catIdx, #fileNum)
+      write #fileNum from '<html><body><table border="1">'
+   else
+      let $_countsHtml = '<table border="1">'
+   end-if
+   do init-rowText
+   do init-colText
+   let #_headCnt = 0
+   let #_colCnt  = 0
+   let #lp = 1
+   let $headKey = $catIdx || ':' || edit(#headCat,'9')
+   let $colKey  = $catIdx || ':' || edit(#rowCat,'9')
+   do get-cat-grp-label($headKey, #catIdx, #catGrp, $headLabel)
+   do get-cat-grp-label($colKey,  #catIdx, #catGrp, $colLabel)
+   while #lp <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#lp)
+      if $key = $headKey
+         let #saveCnt = #cnt
+         let #saveTot = #sum
+!         do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+         do get-heading-idx($val, #headIdx)
+         get $key $val #par #cnt #sum from newCounts(#par)
+         while $key <> $colKey
+            if #par = 0
+               show 'ERROR: Pivot, Parent Not found for ' $headKey
+               stop
+            else
+               get $key $val #par #cnt #sum from newCounts(#par)
+            end-if
+         end-while
+         do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+         do get-column-idx($val, #colIdx)
+         get #pivTot #pivCnt from pivot(#colIdx) cellVal(#headIdx) cellCnt(#headIdx)
+         let #pivTot = #pivTot + #saveTot
+         let #pivCnt = #pivCnt + #saveCnt
+!         show 'put ' #pivTot edit '999' '  ' #pivCnt edit '999' '  into ' #colIdx edit '999' ' / ' #headIdx edit '999'
+         put #pivTot #pivCnt into pivot(#colIdx) cellVal(#headIdx) cellCnt(#headIdx)
+
+         get #pivTot #pivCnt from pivot(0) cellVal(#headIdx) cellCnt(#headIdx)
+         let #pivTot = #pivTot + #saveTot
+         let #pivCnt = #pivCnt + #saveCnt
+         put #pivTot #pivCnt into pivot(0) cellVal(#headIdx) cellCnt(#headIdx)
+
+         get #pivTot #pivCnt from pivot(#colIdx) cellVal(0) cellCnt(0)
+         let #pivTot = #pivTot + #saveTot
+         let #pivCnt = #pivCnt + #saveCnt
+         put #pivTot #pivCnt into pivot(#colIdx) cellVal(0) cellCnt(0)
+      end-if
+      let #lp = #lp + 1
+   end-while
+   
+   let $row = '<td>&nbsp;</td>'
+   do makeTd('', '', $headLabel, $row)
+   do makeTr('', '', $row, $row)
+   if #fileNum <> 0
+      write #fileNum from $row
+   end-if
+   
+   let #head = 1
+   let $row = ''
+   do makeTd('', '', $colLabel,  $row)
+   while #head <= #_headCnt
+      get $head from rowText(#head)
+      do makeTd('', '', $head,  $row)
+      let #head = #head + 1      
+   end-while
+   do makeTd('', '', 'Total',  $row)
+   do makeTr('', '', $row, $row)
+   if #fileNum <> 0
+      write #fileNum from $row
+   end-if
+   
+   let #lp = 1
+   while #lp <= #_colCnt
+      get $row from colText(#lp)
+      let $row = '<td>' || $row || '</td>'
+      let #lp2 = 1
+      while #lp2 <= #_headCnt
+         get #val #cnt from pivot(#lp) cellVal(#lp2) cellCnt(#lp2)
+!         show 'report ' #val edit '99' ' ' #lp edit '999' ' - ' #lp2 edit '999'
+         if $avg = 'Y'
+            if #cnt <> 0
+               let #val = #val / #cnt
+            end-if
+         end-if
+         if $cnt = 'Y'
+            do makeTdNnN(#val, #cnt, '', $row)
+         else
+            do makeTdN('numfld', '', #val,  $row)
+         end-if
+         let #lp2 = #lp2 + 1
+      end-while
+      get #val #cnt  from pivot(#lp) cellVal(0) cellCnt(0)
+      if $avg = 'Y'
+         if #cnt <> 0
+            let #val = #val / #cnt
+         end-if
+      end-if      
+      if $cnt = 'Y'
+         do makeTdNnN(#val, #cnt, '', $row)
+      else
+         do makeTdN('numfld', '', #val, $row)
+      end-if
+      do makeTr('', '', $row, $row)
+      if #fileNum <> 0
+         write #fileNum from $row
+      end-if
+      let #lp = #lp + 1
+   end-while   
+
+   let $row = '<td>Totals</td>'
+   let #lp2 = 1
+   let #grand = 0
+   while #lp2 <= #_headCnt
+      get #val #cnt from pivot(0) cellVal(#lp2) cellCnt(#lp2)
+      if $avg = 'Y'
+         if #cnt <> 0
+            let #val = #val / #cnt
+         end-if
+      end-if
+      let #grand = #grand + #val
+      if $cnt = 'Y'
+         do makeTdNnN(#val, #cnt, '', $row)
+      else
+         do makeTdN('numfld', '', #val,  $row)
+      end-if
+      let #lp2 = #lp2 + 1
+   end-while
+   do makeTdN('numfld', '', #grand,  $row)
+   do makeTr('', '', $row, $row)
+   if #fileNum <> 0
+      write #fileNum from $row
+   end-if
+
+   if #fileNum <> 0
+      write #fileNum from '</table></body></html>'
+   else
+      let $_countsHtml = $_countsHtml || '</table></body></html>'
+   end-if
+end-procedure
+
+begin-procedure validate-count-string($catId, $strValues, :$result)
+!
+!   This procedure is for validating a count string.  Call this to verify that the string matches the number of parmeters as defined for the given category.
+!
+    do get-cat-id($catId, #catIdx, #catCnt)         !Get the category index value, and its count of categories
+    if #catIdx = 0
+       let $result = 'ERROR: Attempt to accumulate on un-defined category: "' || $catId || '".'
+    else
+       do construct-cat-keys(#catIdx, #catCnt)         !Construct the unique category field names, goes into array catKeys
+       do parse-parms($strValues, #parmCnt, $messages) !Parse the string of values into individual fields
+       if #parmCnt <> #catCnt
+          let $result = 'ERROR: Differnt number of values and categories ' || $catId || ' ' || $strValues || '  Results: ' || $messages
+       else
+          if isblank($messages)
+             let $result = 'SUCCESS'
+          else
+             let $result = 'WARNING: Message from string parse: ' || $messages
+          end-if
+       end-if
+    end-if
+end-procedure
+
+begin-procedure add-count-value($catId, $strValues, #byAmt)
+!
+!   This procedure is for accumulating a count by category id.
+!   Begin by identifying the cat id, by getting its index.  Next, retrieve the categories and construct the unique keys to the accumulation array, which is done by prefixing
+!   the category with the cat id index, eg '1:Capability'.  This allows for different cat ids to have category values that are not unique amongst all cat ids.
+!   Input:  $catId - The category which is being counted
+!           $strValues - The values aligned to this category to accumulate, in form of:  '"string1" , "string2", "string3", ... '
+!           #byAmt     - amount to increase the count by (usually 1)
+!   Output: counts in newCounts array are incremented accordingly
+!
+    do get-cat-id($catId, #catIdx, #catCnt)         !Get the category index value, and its count of categories
+!    show 'Get Cat Key for ' $catId ' got ' #catIdx edit '9'
+    if #catIdx = 0
+       show 'ERROR: Attempt to accumulate on un-defined category: "' $catId '".'
+    else
+       do construct-cat-keys(#catIdx, #catCnt)         !Construct the unique category field names, goes into array catKeys
+       do parse-parms($strValues, #parmCnt, $messages) !Parse the string of values into individual fields
+       if #parmCnt <> #catCnt
+          show 'WARNING WARNING: Differnt number of values and categories ' $catId ' ' $strValues '  Results: ' $messages
+       else
+          if not isblank($messages)
+             show 'Notice: ' $messages
+          end-if
+       end-if
+       let #lp = 1
+       let #parent = 0
+       while #lp <= #catCnt                                             !For each field parsed look it up in the counts array and accumulate it, or create it if necessary
+          get $catKey from catKeys(#lp)                                 !loop thru unique cat keys which is the cat index number:category name, 1:Company
+          let $catKey = edit(#catIdx,'9') || ':' || edit(#lp,'9')
+          get $catValue from stringParms(#lp)                           !Get the corresponding category value (by index) that was passed thru $strValues
+!          do dump-parameters(#catCnt)
+          do get-counts-entry($catKey, $catValue, #parent, #catKeyIdx, $first)  !This will find the entry or create a new one
+!          show 'Get Count Entry: ' $catKey '::' $catValue '  Idx: ' #catKeyIdx edit '99' ' ' $first
+          do accum-count-entry(#catKeyIdx, #byAmt, #newCnt)             !This will do the actual accumulation
+          let #parent = #catKeyIdx                                      
+          let #lp = #lp + 1
+       end-while
+    end-if
+end-procedure
+
+!
+! Given a node (child) trace up the tree to the root parent, whilst building a count string
+!
+begin-procedure get-chain-from-child(#childNode, :$chain)
+   get $val from newCounts(#childNode) catValue
+   let $chain = '"' || $val || '"'
+   get #parent from newCounts(#childNode) cntParent
+   while #parent <> 0 
+      get $val #par from newCounts(#parent) catValue cntParent
+      let $chain = '"' || $val || '",' || $chain
+      let #parent = #par
+   end-while
+end-procedure
+
+begin-procedure unwind-kids(#parent, #level, $catIdx, $opt, #fileNum, #proc)
+!
+!Took out #parCnt as a parm.  Neeeded?
+
+!   show '  -get kids for ' #parent edit '9999'
+   let #child = #parent + 1
+   while #child <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#child)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+!      show '  compare idx ' #child edit '9999' ' with parent ' #par edit '9999' ' to ' #parent edit '9999' '  sum:' #sum edit '999999999.99'
+      if #par = #parent
+!         show 'Push:' #child edit '99' ' ' $val
+         do pushCatStack(#parent, #child, #level, $catIdx, #parCnt)
+         let #lev2 = #level + 1
+         do unwind-kids(#child, #lev2, $catIdx, $opt, #fileNum, #proc)  !When this call ends without calling another one of itself, it will then
+         do popCatStack(#parent, #child, #level, $catIdx, #parCnt)     !pop from the stack
+
+         do get-chain-from-child(#child, $unWind)
+!         show 'POP:' #child edit '99' ' - ' #level edit '99'
+         if #proc = 1
+            do unwind-proc1(#child, #parent, #level, #parCnt, $unWind)   !These are not the correct parms
+         end-if
+         if #proc = 2
+            do unwind-proc2(#child, #parent, #level, #parCnt, $unWind)
+         end-if
+         
+      end-if
+      let #child = #child + 1
+   end-while
+end-procedure
+
+!
+! This procedure will run through the counts array for the given category, and return a single string
+! in the same format as when adding to the count array, but in reverse order, that being going from the
+! youngest child to root
+!
+begin-procedure unwind-counts($catId, #proc, $opt)
+!
+!  Loop through the entries for a given cat.  Go through and get the root, then call the kids.
+!
+   do get-cat-id($catId, #catIdx, #catCnt)
+   let $catIdx = edit(#catIdx, '9')
+   let #parent = 1
+   while #parent <= #_newCountsCnt
+      get $key $val #par #cnt #sum from newCounts(#parent)
+      do get-cat-grp-label($key, #catIdx, #catGrp, $keyLabel)
+      do get-catIdx-from-key($key, $arrCatIdx)
+      if $arrCatIdx = $catIdx
+         if #par = 0
+            do pushCatStack(0, #parent, 0, $catIdx, #parCnt)
+            do unwind-kids(#parent, 1, $catIdx, $opt, 0, #proc)
+            do popCatStack(#root, #parent, #level, $catIdx, #parCnt)     !pop from the stack
+
+            do get-chain-from-child(#parent, $unWind)
+            if #proc = 1
+               do unwind-proc1(#parent, #root, #level, #parCnt, $unWind)   !713
+            end-if
+            if #proc = 2
+               do unwind-proc2(#parent, #root, #level, #parCnt, $unWind)
+            end-if
+         end-if
+      end-if
+      let #parent = #parent + 1
+   end-while
+end-procedure
+
