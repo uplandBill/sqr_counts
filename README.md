@@ -7,7 +7,7 @@ Here is an example of defining a new count definition to count by the combinatio
    do define-new-cat('MissCountsYear', '"Status","Year","Field"', #r3pgIdx, 'Y')
 These are really just labels and it is up to you as the programmer to make sure that your provide values to the counting procedure that are consistent and logical to provide accurate results.
    
-During the execution of the program, at some point where queries are run and data is being analyzed, counts will be incremented by call such as this:
+During the execution of the program, at some point where queries are run and data is being analyzed, counts will be incremented by call such as this:<br>
    let $cntStr = '"Active","' || $year || '","' || 'Def HM' || '"'   !Create the counting parameters
    do add-count-value('MissCountsYear', $cntStr, 1)                  !Count the number of these
 
